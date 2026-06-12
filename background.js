@@ -12,6 +12,8 @@ const DEFAULT_SETTINGS = {
   enabled: true,
 };
 
+const RESTRICTED_URLS = /^(about:|moz-extension:\/\/|file:\/\/)/;
+
 let activeTabId = null;
 let activeWindowId = null;
 let lastActivated = Date.now();
@@ -19,31 +21,35 @@ let tabData = {};
 let previousTabId = null;
 
 async function init() {
-  const stored = await api.storage.local.get(['tabData', 'settings']);
-  tabData = stored.tabData || {};
+  try {
+    const stored = await api.storage.local.get(['tabData', 'settings']);
+    tabData = stored.tabData || {};
 
-  const tabs = await api.tabs.query({});
-  const activeIds = new Set(tabs.map(t => t.id));
-  for (const id of Object.keys(tabData)) {
-    if (!activeIds.has(parseInt(id))) {
-      delete tabData[id];
+    const tabs = await api.tabs.query({});
+    const activeIds = new Set(tabs.map(t => t.id));
+    for (const id of Object.keys(tabData)) {
+      if (!activeIds.has(parseInt(id))) {
+        delete tabData[id];
+      }
     }
-  }
 
-  const activeTabs = await api.tabs.query({ active: true, lastFocusedWindow: true });
-  if (activeTabs.length > 0) {
-    const active = activeTabs[0];
-    activeTabId = active.id;
-    activeWindowId = active.windowId;
-    lastActivated = Date.now();
-    ensureTabData(active);
-  }
+    const activeTabs = await api.tabs.query({ active: true, lastFocusedWindow: true });
+    if (activeTabs.length > 0) {
+      const active = activeTabs[0];
+      activeTabId = active.id;
+      activeWindowId = active.windowId;
+      lastActivated = Date.now();
+      ensureTabData(active);
+    }
 
-  await saveTabData();
-  await refreshAllTabColors();
+    await saveTabData();
+  } catch (e) {
+    // Init might fail during startup
+  }
 }
 
 function ensureTabData(tab) {
+  if (!tab || !tab.id) return;
   if (!tabData[tab.id]) {
     tabData[tab.id] = {
       totalTime: 0,
@@ -52,17 +58,15 @@ function ensureTabData(tab) {
       title: tab.title || '',
     };
   }
-  tabData[tab.id].url = tab.url || tabData[tab.id].url;
-  tabData[tab.id].title = tab.title || tabData[tab.id].title;
+  if (tab.url) tabData[tab.id].url = tab.url;
+  if (tab.title) tabData[tab.id].title = tab.title;
 }
 
 async function trackTime() {
-  if (activeTabId !== null) {
+  if (activeTabId !== null && tabData[activeTabId]) {
     const elapsed = (Date.now() - lastActivated) / 1000;
-    if (tabData[activeTabId]) {
-      tabData[activeTabId].totalTime += elapsed;
-      tabData[activeTabId].lastFocused = Date.now();
-    }
+    tabData[activeTabId].totalTime += elapsed;
+    tabData[activeTabId].lastFocused = Date.now();
   }
   lastActivated = Date.now();
 }
@@ -95,32 +99,34 @@ function generateHeatSvg(baseHue, heatLevel, maxOpacity, isPrevious) {
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
 
+function canInjectScript(tab) {
+  if (!tab || !tab.url) return false;
+  if (RESTRICTED_URLS.test(tab.url)) return false;
+  if (tab.url.startsWith('data:')) return false;
+  return true;
+}
+
 async function applyTabColor(tabId) {
-  const stored = await api.storage.local.get('settings');
-  const settings = stored.settings || DEFAULT_SETTINGS;
-  if (!settings.enabled) return;
-
-  const data = tabData[tabId];
-  if (!data) return;
-
-  const heatLevel = getHeatLevel(data.totalTime, settings.thresholds);
-  const isPrevious = settings.showTrail && tabId === previousTabId;
-  const faviconUrl = generateHeatSvg(
-    settings.baseHue,
-    heatLevel,
-    settings.maxOpacity,
-    isPrevious
-  );
-
-  // Inject a link element to override the favicon
-  const css = `
-    #tab-heatmap-favicon { display: none !important; }
-    link[rel="icon"] { display: none !important; }
-    link[rel="shortcut icon"] { display: none !important; }
-  `;
-
   try {
-    // Remove existing heatmap favicon
+    const stored = await api.storage.local.get('settings');
+    const settings = stored.settings || DEFAULT_SETTINGS;
+    if (!settings.enabled) return;
+
+    const data = tabData[tabId];
+    if (!data) return;
+
+    const tab = await api.tabs.get(tabId);
+    if (!canInjectScript(tab)) return;
+
+    const heatLevel = getHeatLevel(data.totalTime, settings.thresholds);
+    const isPrevious = settings.showTrail && tabId === previousTabId;
+    const faviconUrl = generateHeatSvg(
+      settings.baseHue,
+      heatLevel,
+      settings.maxOpacity,
+      isPrevious
+    );
+
     await api.tabs.executeScript(tabId, {
       code: `
         (function() {
@@ -138,153 +144,167 @@ async function applyTabColor(tabId) {
       `,
     });
   } catch (e) {
-    // Script injection can fail on protected pages
+    // Silently ignore - tab may have navigated, closed, or be restricted
   }
 }
 
 async function refreshAllTabColors() {
-  const stored = await api.storage.local.get('settings');
-  const settings = stored.settings || DEFAULT_SETTINGS;
-  if (!settings.enabled) return;
+  try {
+    const stored = await api.storage.local.get('settings');
+    const settings = stored.settings || DEFAULT_SETTINGS;
+    if (!settings.enabled) return;
 
-  const tabs = await api.tabs.query({});
-  for (const tab of tabs) {
-    if (tab.url && !tab.url.startsWith('about:') && !tab.url.startsWith('moz-extension://')) {
-      await applyTabColor(tab.id);
+    const tabs = await api.tabs.query({});
+    for (const tab of tabs) {
+      if (canInjectScript(tab)) {
+        await applyTabColor(tab.id);
+      }
     }
+  } catch (e) {
+    // Refresh might fail
   }
 }
 
 async function saveTabData() {
-  await api.storage.local.set({ tabData });
+  try {
+    await api.storage.local.set({ tabData });
+  } catch (e) {
+    // Storage might fail
+  }
 }
 
-// Event Listeners
-
+// Tab activated
 api.tabs.onActivated.addListener(async (activeInfo) => {
-  await trackTime();
-
-  const previousTabIdOld = activeTabId;
-  activeTabId = activeInfo.tabId;
-  activeWindowId = activeInfo.windowId;
-
-  if (previousTabIdOld && previousTabIdOld !== activeTabId) {
-    previousTabId = previousTabIdOld;
-    await applyTabColor(previousTabId);
-  }
-
   try {
+    await trackTime();
+
+    const prevTabId = activeTabId;
+    activeTabId = activeInfo.tabId;
+    activeWindowId = activeInfo.windowId;
+
+    if (prevTabId && prevTabId !== activeTabId) {
+      previousTabId = prevTabId;
+      await applyTabColor(prevTabId);
+    }
+
     const tab = await api.tabs.get(activeInfo.tabId);
     ensureTabData(tab);
     await applyTabColor(activeInfo.tabId);
-  } catch (e) {}
-
-  await saveTabData();
-});
-
-api.windows.onFocusChanged.addListener(async (windowId) => {
-  await trackTime();
-
-  if (windowId === api.windows.WINDOW_ID_NONE) {
-    activeTabId = null;
-    activeWindowId = null;
-    return;
-  }
-
-  activeWindowId = windowId;
-
-  const activeTabs = await api.tabs.query({ active: true, windowId });
-  if (activeTabs.length > 0) {
-    activeTabId = activeTabs[0].id;
-    ensureTabData(activeTabs[0]);
-    await applyTabColor(activeTabs[0].id);
-  }
-
-  await saveTabData();
-});
-
-api.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (changeInfo.url || changeInfo.favIconUrl) {
-    ensureTabData(tab);
     await saveTabData();
-  }
-
-  if (changeInfo.status === 'complete') {
-    await applyTabColor(tabId);
+  } catch (e) {
+    // Tab might not exist
   }
 });
 
+// Window focus changed
+api.windows.onFocusChanged.addListener(async (windowId) => {
+  try {
+    await trackTime();
+
+    if (windowId === api.windows.WINDOW_ID_NONE) {
+      activeTabId = null;
+      activeWindowId = null;
+      return;
+    }
+
+    activeWindowId = windowId;
+
+    const activeTabs = await api.tabs.query({ active: true, windowId });
+    if (activeTabs.length > 0) {
+      activeTabId = activeTabs[0].id;
+      ensureTabData(activeTabs[0]);
+      await applyTabColor(activeTabs[0].id);
+    }
+
+    await saveTabData();
+  } catch (e) {
+    // Window might not exist
+  }
+});
+
+// Tab updated
+api.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  try {
+    if (changeInfo.url || changeInfo.title) {
+      ensureTabData(tab);
+      await saveTabData();
+    }
+
+    if (changeInfo.status === 'complete') {
+      await applyTabColor(tabId);
+    }
+  } catch (e) {
+    // Tab update failed
+  }
+});
+
+// Tab removed
 api.tabs.onRemoved.addListener(async (tabId) => {
-  delete tabData[tabId];
-  if (tabId === activeTabId) {
-    activeTabId = null;
+  try {
+    delete tabData[tabId];
+    if (tabId === activeTabId) activeTabId = null;
+    if (tabId === previousTabId) previousTabId = null;
+    await saveTabData();
+  } catch (e) {
+    // Cleanup failed
   }
-  if (tabId === previousTabId) {
-    previousTabId = null;
-  }
-  await saveTabData();
 });
 
-// Periodic save and refresh
+// Periodic save (every 10 seconds)
 setInterval(async () => {
   await trackTime();
   await saveTabData();
-  await refreshAllTabColors();
-}, 5000);
+}, 10000);
 
 // Message handler
-api.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
-  if (message.type === 'GET_STATS') {
-    const tabs = await api.tabs.query({});
-    let totalTime = 0;
-    let hotTabs = 0;
-    const stored = await api.storage.local.get('settings');
-    const settings = stored.settings || DEFAULT_SETTINGS;
+api.runtime.onMessage.addListener((message, sender) => {
+  return (async () => {
+    try {
+      if (message.type === 'GET_STATS') {
+        const tabs = await api.tabs.query({});
+        let totalTime = 0;
+        let hotTabs = 0;
+        const stored = await api.storage.local.get('settings');
+        const settings = stored.settings || DEFAULT_SETTINGS;
 
-    for (const tab of tabs) {
-      const data = tabData[tab.id];
-      if (data) {
-        totalTime += data.totalTime;
-        const level = getHeatLevel(data.totalTime, settings.thresholds);
-        if (level >= 3) hotTabs++;
+        for (const tab of tabs) {
+          const data = tabData[tab.id];
+          if (data) {
+            totalTime += data.totalTime;
+            const level = getHeatLevel(data.totalTime, settings.thresholds);
+            if (level >= 3) hotTabs++;
+          }
+        }
+
+        return {
+          totalTabs: tabs.length,
+          totalTime: Math.round(totalTime),
+          hotTabs,
+          activeTabId,
+          previousTabId,
+        };
+      } else if (message.type === 'UPDATE_SETTINGS') {
+        await api.storage.local.set({ settings: message.settings });
+        await refreshAllTabColors();
+        return { ok: true };
+      } else if (message.type === 'GET_SETTINGS') {
+        const stored = await api.storage.local.get('settings');
+        return { settings: stored.settings || DEFAULT_SETTINGS };
+      } else if (message.type === 'RESET_DATA') {
+        tabData = {};
+        previousTabId = null;
+        await saveTabData();
+        await refreshAllTabColors();
+        return { ok: true };
       }
+    } catch (e) {
+      return { error: e.message };
     }
-
-    return {
-      totalTabs: tabs.length,
-      totalTime: Math.round(totalTime),
-      hotTabs,
-      activeTabId,
-      previousTabId,
-    };
-  }
-
-  if (message.type === 'UPDATE_SETTINGS') {
-    await api.storage.local.set({ settings: message.settings });
-    await refreshAllTabColors();
-    return { ok: true };
-  }
-
-  if (message.type === 'GET_SETTINGS') {
-    const stored = await api.storage.local.get('settings');
-    return { settings: stored.settings || DEFAULT_SETTINGS };
-  }
-
-  if (message.type === 'RESET_DATA') {
-    tabData = {};
-    previousTabId = null;
-    await saveTabData();
-    await refreshAllTabColors();
-    return { ok: true };
-  }
+  })();
 });
 
-api.runtime.onInstalled.addListener(() => {
-  init();
-});
-
-api.runtime.onStartup.addListener(() => {
-  init();
-});
+// Init on install and startup
+api.runtime.onInstalled.addListener(() => init());
+api.runtime.onStartup.addListener(() => init());
 
 init();

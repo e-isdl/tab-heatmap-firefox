@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Tab Heatmap",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Color tabs by time spent. Find your way back with a heat trail.",
   "permissions": [
     "tabs",
