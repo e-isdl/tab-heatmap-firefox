@@ -26,10 +26,10 @@ async function init() {
     tabData = stored.tabData || {};
 
     const tabs = await api.tabs.query({});
-    const activeIds = new Set(tabs.map(t => t.id));
-    for (const id of Object.keys(tabData)) {
+    const activeIds = new Set(tabs.map(function(t) { return t.id; }));
+    Object.keys(tabData).forEach(function(id) {
       if (!activeIds.has(parseInt(id))) delete tabData[id];
-    }
+    });
 
     const activeTabs = await api.tabs.query({ active: true, lastFocusedWindow: true });
     if (activeTabs.length > 0) {
@@ -82,7 +82,7 @@ async function getSettings() {
 
 async function saveTabData() {
   try {
-    await api.storage.local.set({ tabData });
+    await api.storage.local.set({ tabData: tabData });
   } catch (e) {}
 }
 
@@ -91,102 +91,98 @@ async function injectHeatBar(tabId, heatLevel, isPrevious, baseHue, previousHue,
   if (heatLevel === 0) {
     heatOpacity = 0.2;
     heatHeight = 3;
-    heatColor = `hsl(${baseHue}, 60%, 50%)`;
+    heatColor = 'hsl(' + baseHue + ', 60%, 50%)';
   } else {
     heatOpacity = 0.4 + (heatLevel / 4) * (maxOpacity - 0.4);
     heatHeight = 3 + (heatLevel / 4) * 5;
-    heatColor = `hsl(${baseHue}, 80%, 55%)`;
+    heatColor = 'hsl(' + baseHue + ', 80%, 55%)';
   }
 
-  const barColor = isPrevious ? `hsl(${previousHue}, 90%, 60%)` : heatColor;
-  const barHeight = isPrevious ? 8 : heatHeight;
-  const barOpacity = isPrevious ? 1.0 : heatOpacity;
-  const fillPercent = Math.min(100, (heatLevel / 4) * 100);
-  const fillWidth = isPrevious ? '100%' : fillPercent + '%';
-  const shadowSize = isPrevious ? '8px' : '4px';
+  var barColor = isPrevious ? 'hsl(' + previousHue + ', 90%, 60%)' : heatColor;
+  var barHeight = isPrevious ? 8 : heatHeight;
+  var barOpacity = isPrevious ? 1.0 : heatOpacity;
+  var fillPercent = Math.min(100, (heatLevel / 4) * 100);
+  var fillWidth = isPrevious ? '100%' : fillPercent + '%';
+  var shadowSize = isPrevious ? '8px' : '4px';
 
-  const code = `
-    (function() {
-      var existing = document.getElementById('tab-heatmap-bar');
-      if (existing) existing.remove();
-      var bar = document.createElement('div');
-      bar.id = 'tab-heatmap-bar';
-      bar.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:${barHeight}px;z-index:2147483647;pointer-events:none;background:transparent;';
-      var fill = document.createElement('div');
-      fill.style.cssText = 'position:absolute;top:0;left:0;height:100%;width:${fillWidth};background:${barColor};opacity:${barOpacity};transition:width 0.5s ease,background 0.3s ease;box-shadow:0 0 ${shadowSize} ${barColor};';
-      bar.appendChild(fill);
-      document.body.appendChild(bar);
-    })();
-  `;
+  var code = '(function() {'
+    + 'var existing = document.getElementById("tab-heatmap-bar");'
+    + 'if (existing) existing.remove();'
+    + 'var bar = document.createElement("div");'
+    + 'bar.id = "tab-heatmap-bar";'
+    + 'bar.style.cssText = "position:fixed;top:0;left:0;width:100%;height:' + barHeight + 'px;z-index:2147483647;pointer-events:none;background:transparent;";'
+    + 'var fill = document.createElement("div");'
+    + 'fill.style.cssText = "position:absolute;top:0;left:0;height:100%;width:' + fillWidth + ';background:' + barColor + ';opacity:' + barOpacity + ';transition:width 0.5s ease,background 0.3s ease;box-shadow:0 0 ' + shadowSize + ' ' + barColor + ';";'
+    + 'bar.appendChild(fill);'
+    + 'document.body.appendChild(bar);'
+    + '})();';
 
   try {
-    await api.tabs.executeScript(tabId, { code });
+    await api.tabs.executeScript(tabId, { code: code });
   } catch (e) {}
 }
 
 async function injectFavicon(tabId, hue, heatLevel, maxOpacity, isPrevious) {
-  const size = 32;
-  const r = 12;
-  let opacity;
+  var size = 32;
+  var r = 12;
+  var opacity;
   if (heatLevel === 0) {
     opacity = 0.3;
   } else {
     opacity = 0.4 + (heatLevel / 4) * (maxOpacity - 0.4);
   }
 
-  let circle = `<circle cx="16" cy="16" r="${r}" fill="hsl(${hue}, 80%, 55%)" opacity="${opacity}"/>`;
+  var circle = '<circle cx="16" cy="16" r="' + r + '" fill="hsl(' + hue + ', 80%, 55%)" opacity="' + opacity + '"/>';
   if (isPrevious) {
-    circle += `<circle cx="16" cy="16" r="${r - 2}" fill="none" stroke="hsl(${hue}, 90%, 70%)" stroke-width="2" opacity="1"/>`;
+    circle += '<circle cx="16" cy="16" r="' + (r - 2) + '" fill="none" stroke="hsl(' + hue + ', 90%, 70%)" stroke-width="2" opacity="1"/>';
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${circle}</svg>`;
-  const faviconUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' + circle + '</svg>';
+  var faviconUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 
-  const code = `
-    (function() {
-      var existing = document.getElementById('tab-heatmap-favicon');
-      if (existing) existing.remove();
-      var link = document.createElement('link');
-      link.id = 'tab-heatmap-favicon';
-      link.rel = 'icon';
-      link.type = 'image/svg+xml';
-      link.href = '${faviconUrl}';
-      document.head.appendChild(link);
-    })();
-  `;
+  var code = '(function() {'
+    + 'var existing = document.getElementById("tab-heatmap-favicon");'
+    + 'if (existing) existing.remove();'
+    + 'var link = document.createElement("link");'
+    + 'link.id = "tab-heatmap-favicon";'
+    + 'link.rel = "icon";'
+    + 'link.type = "image/svg+xml";'
+    + 'link.href = "' + faviconUrl + '";'
+    + 'document.head.appendChild(link);'
+    + '})();';
 
   try {
-    await api.tabs.executeScript(tabId, { code });
+    await api.tabs.executeScript(tabId, { code: code });
   } catch (e) {}
 }
 
 async function applyTabVisuals(tabId) {
   try {
-    const settings = await getSettings();
+    var settings = await getSettings();
     if (!settings.enabled) return;
 
-    const data = tabData[tabId];
+    var data = tabData[tabId];
     if (!data) return;
 
-    const tab = await api.tabs.get(tabId);
+    var tab = await api.tabs.get(tabId);
     if (!canInject(tab)) return;
 
-    const heatLevel = getHeatLevel(data.totalTime, settings.thresholds);
-    const isPrevious = settings.showTrail && tabId === previousTabId;
+    var heatLevel = getHeatLevel(data.totalTime, settings.thresholds);
+    var isPrevious = settings.showTrail && tabId === previousTabId;
 
     await injectHeatBar(tabId, heatLevel, isPrevious, settings.baseHue, settings.previousHue, settings.maxOpacity);
 
-    const favHue = isPrevious ? settings.previousHue : settings.baseHue;
+    var favHue = isPrevious ? settings.previousHue : settings.baseHue;
     await injectFavicon(tabId, favHue, heatLevel, settings.maxOpacity, isPrevious);
   } catch (e) {}
 }
 
 async function refreshAllVisuals() {
   try {
-    const tabs = await api.tabs.query({});
-    for (const tab of tabs) {
-      if (canInject(tab)) {
-        await applyTabVisuals(tab.id);
+    var tabs = await api.tabs.query({});
+    for (var i = 0; i < tabs.length; i++) {
+      if (canInject(tabs[i])) {
+        await applyTabVisuals(tabs[i].id);
       }
     }
   } catch (e) {}
@@ -198,7 +194,7 @@ api.tabs.onActivated.addListener(function(activeInfo) {
     try {
       await trackTime();
 
-      const oldTabId = activeTabId;
+      var oldTabId = activeTabId;
       activeTabId = activeInfo.tabId;
       activeWindowId = activeInfo.windowId;
 
@@ -211,7 +207,7 @@ api.tabs.onActivated.addListener(function(activeInfo) {
         await applyTabVisuals(oldTabId);
       }
 
-      const tab = await api.tabs.get(activeInfo.tabId);
+      var tab = await api.tabs.get(activeInfo.tabId);
       ensureTabData(tab);
       await applyTabVisuals(activeInfo.tabId);
       await saveTabData();
@@ -233,9 +229,9 @@ api.windows.onFocusChanged.addListener(function(windowId) {
 
       activeWindowId = windowId;
 
-      const activeTabs = await api.tabs.query({ active: true, windowId });
+      var activeTabs = await api.tabs.query({ active: true, windowId: windowId });
       if (activeTabs.length > 0) {
-        const oldTabId = activeTabId;
+        var oldTabId = activeTabId;
         activeTabId = activeTabs[0].id;
 
         if (oldTabId && oldTabId !== activeTabId) {
@@ -295,16 +291,16 @@ api.runtime.onMessage.addListener(function(message, sender) {
   return (async function() {
     try {
       if (message.type === 'GET_STATS') {
-        const tabs = await api.tabs.query({});
-        let totalTime = 0;
-        let hotTabs = 0;
-        const settings = await getSettings();
+        var tabs = await api.tabs.query({});
+        var totalTime = 0;
+        var hotTabs = 0;
+        var settings = await getSettings();
 
-        for (const tab of tabs) {
-          const data = tabData[tab.id];
+        for (var i = 0; i < tabs.length; i++) {
+          var data = tabData[tabs[i].id];
           if (data) {
             totalTime += data.totalTime;
-            const level = getHeatLevel(data.totalTime, settings.thresholds);
+            var level = getHeatLevel(data.totalTime, settings.thresholds);
             if (level >= 3) hotTabs++;
           }
         }
@@ -312,16 +308,16 @@ api.runtime.onMessage.addListener(function(message, sender) {
         return {
           totalTabs: tabs.length,
           totalTime: Math.round(totalTime),
-          hotTabs,
-          activeTabId,
-          previousTabId,
+          hotTabs: hotTabs,
+          activeTabId: activeTabId,
+          previousTabId: previousTabId,
         };
       } else if (message.type === 'UPDATE_SETTINGS') {
         await api.storage.local.set({ settings: message.settings });
         await refreshAllVisuals();
         return { ok: true };
       } else if (message.type === 'GET_SETTINGS') {
-        const stored = await api.storage.local.get('settings');
+        var stored = await api.storage.local.get('settings');
         return { settings: stored.settings || DEFAULT_SETTINGS };
       } else if (message.type === 'RESET_DATA') {
         tabData = {};
