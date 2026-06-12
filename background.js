@@ -1,5 +1,5 @@
-// Tab Heatmap - Background Script (Firefox v5)
-// Shows heat level and trail on tab titles + top bar
+// Tab Heatmap - Background Script (Firefox v6)
+// Shows heat level and trail on tab titles + top bar (no favicon changes)
 
 const api = typeof browser !== 'undefined' ? browser : chrome;
 
@@ -14,9 +14,8 @@ const DEFAULT_SETTINGS = {
 
 const RESTRICTED = /^(about:|moz-extension:\/\/|file:\/\/|data:)/;
 
-// Emoji markers for heat levels
-const HEAT_MARKERS = ['', '🟡', '🟠', '🔴', '🔥'];
-const TRAIL_MARKER = '🔵';
+const HEAT_MARKERS = ['', '\u{1F7E1}', '\u{1F7E0}', '\u{1F534}', '\u{1F525}'];
+const TRAIL_MARKER = '\u{1F535}';
 
 let activeTabId = null;
 let activeWindowId = null;
@@ -58,7 +57,6 @@ function ensureTabData(tab) {
   if (tab.url) tabData[tab.id].url = tab.url;
   if (tab.title) {
     tabData[tab.id].title = tab.title;
-    // Store original title if not already stored
     if (!originalTitles[tab.id]) {
       originalTitles[tab.id] = tab.title;
     }
@@ -98,12 +96,17 @@ async function saveTabData() {
   } catch (e) {}
 }
 
+// Strip emoji markers from title
+function stripMarkers(title) {
+  return title.replace(/^[\u{1F7E1}\u{1F7E0}\u{1F534}\u{1F525}\u{1F535} ]+/u, '').trim();
+}
+
 // Update tab title with heat marker
 async function updateTabTitle(tabId, heatLevel, isTrail) {
   try {
     const tab = await api.tabs.get(tabId);
     const originalTitle = originalTitles[tabId] || tab.title || '';
-    const baseTitle = originalTitle.replace(/^[\🟡\🟠\🔴\🔥\🔵\ ]+/, '').trim();
+    const baseTitle = stripMarkers(originalTitle);
 
     let marker = '';
     if (isTrail) {
@@ -117,18 +120,6 @@ async function updateTabTitle(tabId, heatLevel, isTrail) {
     if (tab.title !== newTitle) {
       await api.tabs.executeScript(tabId, {
         code: 'document.title = ' + JSON.stringify(newTitle) + ';'
-      }).catch(function() {});
-    }
-  } catch (e) {}
-}
-
-// Restore original tab title
-async function restoreTabTitle(tabId) {
-  try {
-    const originalTitle = originalTitles[tabId];
-    if (originalTitle) {
-      await api.tabs.executeScript(tabId, {
-        code: 'document.title = ' + JSON.stringify(originalTitle) + ';'
       }).catch(function() {});
     }
   } catch (e) {}
@@ -152,10 +143,7 @@ async function clearTrail(tabId) {
     }).catch(function() {});
 
     // Reapply heat bar without trail
-    await injectHeatBar(tabId, heatLevel, false, settings.baseHue, settings.previousHue, settings.maxOpacity);
-
-    // Reapply favicon without trail
-    await injectFavicon(tabId, settings.baseHue, heatLevel, settings.maxOpacity, false);
+    await injectHeatBar(tabId, heatLevel, false, settings.baseHue, settings.maxOpacity);
 
     // Update title without trail
     await updateTabTitle(tabId, heatLevel, false);
@@ -177,46 +165,32 @@ async function applyTrail(tabId) {
     // Apply heat bar with trail
     await injectHeatBar(tabId, heatLevel, true, settings.baseHue, settings.previousHue, settings.maxOpacity);
 
-    // Apply favicon with trail
-    await injectFavicon(tabId, settings.previousHue, heatLevel, settings.maxOpacity, true);
-
     // Update title with trail marker
     await updateTabTitle(tabId, heatLevel, true);
   } catch (e) {}
 }
 
-async function injectHeatBar(tabId, heatLevel, isPrevious, baseHue, previousHue, maxOpacity) {
-  var heatOpacity, heatHeight, heatColor;
+async function injectHeatBar(tabId, heatLevel, isPrevious, baseHue, maxOpacity) {
+  var heatHeight;
 
   if (heatLevel === 0) {
-    heatOpacity = 0.25;
     heatHeight = 4;
-    heatColor = 'hsl(' + baseHue + ', 60%, 50%)';
   } else if (heatLevel === 1) {
-    heatOpacity = 0.4;
     heatHeight = 6;
-    heatColor = 'hsl(' + baseHue + ', 70%, 50%)';
   } else if (heatLevel === 2) {
-    heatOpacity = 0.6;
     heatHeight = 8;
-    heatColor = 'hsl(' + baseHue + ', 75%, 52%)';
   } else if (heatLevel === 3) {
-    heatOpacity = 0.8;
     heatHeight = 10;
-    heatColor = 'hsl(' + baseHue + ', 80%, 55%)';
   } else {
-    heatOpacity = 1.0;
     heatHeight = 12;
-    heatColor = 'hsl(' + baseHue + ', 85%, 55%)';
   }
 
-  var barColor = isPrevious ? 'hsl(' + previousHue + ', 95%, 55%)' : heatColor;
+  var barColor = isPrevious ? 'hsl(210, 95%, 55%)' : 'hsl(' + baseHue + ', 80%, 55%)';
   var barHeight = isPrevious ? 10 : heatHeight;
-  var barOpacity = isPrevious ? 1.0 : heatOpacity;
   var fillPercent = Math.min(100, (heatLevel / 4) * 100);
   var fillWidth = isPrevious ? '100%' : fillPercent + '%';
   var shadowSize = isPrevious ? '10px' : '6px';
-  var glowColor = isPrevious ? 'hsl(' + previousHue + ', 100%, 70%)' : 'hsl(' + baseHue + ', 90%, 65%)';
+  var glowColor = isPrevious ? 'hsl(210, 100%, 70%)' : 'hsl(' + baseHue + ', 90%, 65%)';
 
   var code = '(function() {'
     + 'var existing = document.getElementById("tab-heatmap-bar");'
@@ -225,48 +199,13 @@ async function injectHeatBar(tabId, heatLevel, isPrevious, baseHue, previousHue,
     + 'bar.id = "tab-heatmap-bar";'
     + 'bar.setAttribute("style", "position:fixed !important;top:0 !important;left:0 !important;width:100% !important;height:' + barHeight + 'px !important;z-index:2147483647 !important;pointer-events:none !important;background:transparent !important;border:none !important;margin:0 !important;padding:0 !important;");'
     + 'var fill = document.createElement("div");'
-    + 'fill.setAttribute("style", "position:absolute !important;top:0 !important;left:0 !important;height:100% !important;width:' + fillWidth + ' !important;background:' + barColor + ' !important;opacity:' + barOpacity + ' !important;box-shadow:0 0 ' + shadowSize + ' ' + glowColor + ', 0 0 ' + (parseInt(shadowSize) + 4) + 'px ' + barColor + ' !important;border:none !important;margin:0 !important;padding:0 !important;");'
+    + 'fill.setAttribute("style", "position:absolute !important;top:0 !important;left:0 !important;height:100% !important;width:' + fillWidth + ' !important;background:' + barColor + ' !important;opacity:1 !important;box-shadow:0 0 ' + shadowSize + ' ' + glowColor + ', 0 0 ' + (parseInt(shadowSize) + 4) + 'px ' + barColor + ' !important;border:none !important;margin:0 !important;padding:0 !important;");'
     + 'bar.appendChild(fill);'
     + 'if (document.body) {'
     + '  document.body.appendChild(bar);'
     + '} else {'
     + '  document.addEventListener("DOMContentLoaded", function() { document.body.appendChild(bar); });'
     + '}'
-    + '})();';
-
-  try {
-    await api.tabs.executeScript(tabId, { code: code });
-  } catch (e) {}
-}
-
-async function injectFavicon(tabId, hue, heatLevel, maxOpacity, isPrevious) {
-  var size = 32;
-  var r = 12;
-  var opacity;
-  if (heatLevel === 0) {
-    opacity = 0.4;
-  } else {
-    opacity = 0.5 + (heatLevel / 4) * (maxOpacity - 0.5);
-  }
-
-  var circle = '<circle cx="16" cy="16" r="' + r + '" fill="hsl(' + hue + ', 80%, 55%)" opacity="' + opacity + '"/>';
-  if (isPrevious) {
-    circle += '<circle cx="16" cy="16" r="' + (r - 2) + '" fill="none" stroke="hsl(' + hue + ', 95%, 70%)" stroke-width="2.5" opacity="1"/>';
-    circle += '<circle cx="16" cy="16" r="' + (r - 5) + '" fill="none" stroke="hsl(' + hue + ', 100%, 80%)" stroke-width="1" opacity="0.8"/>';
-  }
-
-  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' + circle + '</svg>';
-  var faviconUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
-
-  var code = '(function() {'
-    + 'var existing = document.getElementById("tab-heatmap-favicon");'
-    + 'if (existing) existing.remove();'
-    + 'var link = document.createElement("link");'
-    + 'link.id = "tab-heatmap-favicon";'
-    + 'link.rel = "icon";'
-    + 'link.type = "image/svg+xml";'
-    + 'link.href = "' + faviconUrl + '";'
-    + 'document.head.appendChild(link);'
     + '})();';
 
   try {
@@ -299,11 +238,7 @@ async function refreshTabVisuals(tabId) {
     var heatLevel = getHeatLevel(data.totalTime, settings.thresholds);
     var isTrailTab = settings.showTrail && tabId === previousTabId;
 
-    await injectHeatBar(tabId, heatLevel, isTrailTab, settings.baseHue, settings.previousHue, settings.maxOpacity);
-
-    var favHue = isTrailTab ? settings.previousHue : settings.baseHue;
-    await injectFavicon(tabId, favHue, heatLevel, settings.maxOpacity, isTrailTab);
-
+    await injectHeatBar(tabId, heatLevel, isTrailTab, settings.baseHue, settings.maxOpacity);
     await updateTabTitle(tabId, heatLevel, isTrailTab);
   } catch (e) {}
 }
@@ -318,18 +253,15 @@ api.tabs.onActivated.addListener(function(activeInfo) {
       activeTabId = activeInfo.tabId;
       activeWindowId = activeInfo.windowId;
 
-      // Clear trail from the old previous tab
       if (previousTabId && previousTabId !== activeTabId) {
         await clearTrail(previousTabId);
       }
 
-      // Set new previous tab and apply trail
       if (oldTabId && oldTabId !== activeTabId) {
         previousTabId = oldTabId;
         await applyTrail(oldTabId);
       }
 
-      // Update new active tab visuals
       var tab = await api.tabs.get(activeInfo.tabId);
       ensureTabData(tab);
       await refreshTabVisuals(activeInfo.tabId);
@@ -357,12 +289,10 @@ api.windows.onFocusChanged.addListener(function(windowId) {
         var oldTabId = activeTabId;
         activeTabId = activeTabs[0].id;
 
-        // Clear trail from old previous tab
         if (previousTabId && previousTabId !== activeTabId) {
           await clearTrail(previousTabId);
         }
 
-        // Set new previous tab and apply trail
         if (oldTabId && oldTabId !== activeTabId) {
           previousTabId = oldTabId;
           await applyTrail(oldTabId);
@@ -383,14 +313,12 @@ api.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
     try {
       if (changeInfo.url) {
         ensureTabData(tab);
-        // Store new original title when URL changes
         originalTitles[tabId] = tab.title || '';
         await saveTabData();
       }
       if (changeInfo.title) {
-        // Update stored original title if not marked
         var currentTitle = tab.title || '';
-        if (!currentTitle.match(/^[\🟡\🟠\🔴\🔥\🔵\ ]+/)) {
+        if (!currentTitle.match(/^[\u{1F7E1}\u{1F7E0}\u{1F534}\u{1F525}\u{1F535} ]+/u)) {
           originalTitles[tabId] = currentTitle;
         }
       }
