@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Tab Heatmap</h1>
+      <p class="subtitle">Color tabs by time spent</p>
+    </header>
+
+    <div class="stats" id="stats">
+      <div class="stat">
+        <span class="stat-value" id="totalTabs">0</span>
+        <span class="stat-label">Tabs</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="totalTime">0s</span>
+        <span class="stat-label">Tracked</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="hotTabs">0</span>
+        <span class="stat-label">Hot</span>
+      </div>
+    </div>
+
+    <div class="toggle-row">
+      <label class="toggle">
+        <input type="checkbox" id="enabled" checked>
+        <span class="slider"></span>
+      </label>
+      <span class="toggle-label">Enable coloring</span>
+    </div>
+
+    <div class="toggle-row">
+      <label class="toggle">
+        <input type="checkbox" id="showTrail" checked>
+        <span class="slider"></span>
+      </label>
+      <span class="toggle-label">Show back-trail marker</span>
+    </div>
+
+    <div class="section">
+      <label class="field-label">Heatmap Color</label>
+      <div class="color-row">
+        <input type="range" id="baseHue" min="0" max="360" value="30">
+        <div class="color-preview" id="basePreview"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <label class="field-label">Back-Trail Color</label>
+      <div class="color-row">
+        <input type="range" id="previousHue" min="0" max="360" value="200">
+        <div class="color-preview" id="previousPreview"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <label class="field-label">Heat Thresholds (seconds)</label>
+      <div class="thresholds" id="thresholds">
+        <div class="threshold-input">
+          <span class="threshold-label">Warm</span>
+          <input type="number" id="t0" min="1" max="600" value="10">
+        </div>
+        <div class="threshold-input">
+          <span class="threshold-label">Medium</span>
+          <input type="number" id="t1" min="1" max="600" value="30">
+        </div>
+        <div class="threshold-input">
+          <span class="threshold-label">Hot</span>
+          <input type="number" id="t2" min="1" max="600" value="60">
+        </div>
+        <div class="threshold-input">
+          <span class="threshold-label">Burning</span>
+          <input type="number" id="t3" min="1" max="600" value="180">
+        </div>
+        <div class="threshold-input">
+          <span class="threshold-label">Inferno</span>
+          <input type="number" id="t4" min="1" max="600" value="600">
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <label class="field-label">Max Intensity</label>
+      <input type="range" id="maxOpacity" min="0.3" max="1" step="0.05" value="0.85">
+    </div>
+
+    <div class="actions">
+      <button id="resetBtn" class="btn btn-secondary">Reset Data</button>
+      <button id="saveBtn" class="btn btn-primary">Save Settings</button>
+    </div>
+
+    <div class="legend">
+      <div class="legend-title">Heat Legend</div>
+      <div class="legend-row">
+        <div class="legend-item"><span class="legend-dot" style="opacity:0.15"></span> Cold</div>
+        <div class="legend-item"><span class="legend-dot" style="opacity:0.3"></span> Warm</div>
+        <div class="legend-item"><span class="legend-dot" style="opacity:0.5"></span> Medium</div>
+        <div class="legend-item"><span class="legend-dot" style="opacity:0.7"></span> Hot</div>
+        <div class="legend-item"><span class="legend-dot" style="opacity:0.9"></span> Inferno</div>
+      </div>
+      <div class="legend-row" style="margin-top: 6px">
+        <div class="legend-item"><span class="legend-dot trail-dot"></span> Back-trail</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
