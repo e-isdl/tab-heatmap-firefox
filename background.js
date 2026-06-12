@@ -1,5 +1,5 @@
-// Tab Heatmap - Background Script (Firefox v4)
-// Adds a visible heat bar at the top of each tab
+// Tab Heatmap - Background Script (Firefox v5)
+// Shows heat level and trail on tab titles + top bar
 
 const api = typeof browser !== 'undefined' ? browser : chrome;
 
@@ -14,12 +14,16 @@ const DEFAULT_SETTINGS = {
 
 const RESTRICTED = /^(about:|moz-extension:\/\/|file:\/\/|data:)/;
 
+// Emoji markers for heat levels
+const HEAT_MARKERS = ['', '🟡', '🟠', '🔴', '🔥'];
+const TRAIL_MARKER = '🔵';
+
 let activeTabId = null;
 let activeWindowId = null;
 let lastActivated = Date.now();
 let tabData = {};
 let previousTabId = null;
-let tabsWithTrail = new Set();
+let originalTitles = {};
 
 async function init() {
   try {
@@ -39,6 +43,7 @@ async function init() {
       activeWindowId = active.windowId;
       lastActivated = Date.now();
       ensureTabData(active);
+      originalTitles[active.id] = active.title || '';
     }
 
     await saveTabData();
@@ -51,7 +56,13 @@ function ensureTabData(tab) {
     tabData[tab.id] = { totalTime: 0, lastFocused: Date.now(), url: '', title: '' };
   }
   if (tab.url) tabData[tab.id].url = tab.url;
-  if (tab.title) tabData[tab.id].title = tab.title;
+  if (tab.title) {
+    tabData[tab.id].title = tab.title;
+    // Store original title if not already stored
+    if (!originalTitles[tab.id]) {
+      originalTitles[tab.id] = tab.title;
+    }
+  }
 }
 
 async function trackTime() {
@@ -87,10 +98,44 @@ async function saveTabData() {
   } catch (e) {}
 }
 
+// Update tab title with heat marker
+async function updateTabTitle(tabId, heatLevel, isTrail) {
+  try {
+    const tab = await api.tabs.get(tabId);
+    const originalTitle = originalTitles[tabId] || tab.title || '';
+    const baseTitle = originalTitle.replace(/^[\🟡\🟠\🔴\🔥\🔵\ ]+/, '').trim();
+
+    let marker = '';
+    if (isTrail) {
+      marker = TRAIL_MARKER + ' ';
+    } else if (heatLevel > 0) {
+      marker = HEAT_MARKERS[heatLevel] + ' ';
+    }
+
+    const newTitle = marker + baseTitle;
+
+    if (tab.title !== newTitle) {
+      await api.tabs.executeScript(tabId, {
+        code: 'document.title = ' + JSON.stringify(newTitle) + ';'
+      }).catch(function() {});
+    }
+  } catch (e) {}
+}
+
+// Restore original tab title
+async function restoreTabTitle(tabId) {
+  try {
+    const originalTitle = originalTitles[tabId];
+    if (originalTitle) {
+      await api.tabs.executeScript(tabId, {
+        code: 'document.title = ' + JSON.stringify(originalTitle) + ';'
+      }).catch(function() {});
+    }
+  } catch (e) {}
+}
+
 // Clear trail from a specific tab
 async function clearTrail(tabId) {
-  if (!tabsWithTrail.has(tabId)) return;
-
   try {
     var settings = await getSettings();
     var data = tabData[tabId];
@@ -102,12 +147,9 @@ async function clearTrail(tabId) {
     var heatLevel = getHeatLevel(data.totalTime, settings.thresholds);
 
     // Remove bar
-    var removeBarCode = '(function() {'
-      + 'var el = document.getElementById("tab-heatmap-bar");'
-      + 'if (el) el.remove();'
-      + '})();';
-
-    await api.tabs.executeScript(tabId, { code: removeBarCode }).catch(function() {});
+    await api.tabs.executeScript(tabId, {
+      code: '(function() { var el = document.getElementById("tab-heatmap-bar"); if (el) el.remove(); })();'
+    }).catch(function() {});
 
     // Reapply heat bar without trail
     await injectHeatBar(tabId, heatLevel, false, settings.baseHue, settings.previousHue, settings.maxOpacity);
@@ -115,7 +157,8 @@ async function clearTrail(tabId) {
     // Reapply favicon without trail
     await injectFavicon(tabId, settings.baseHue, heatLevel, settings.maxOpacity, false);
 
-    tabsWithTrail.delete(tabId);
+    // Update title without trail
+    await updateTabTitle(tabId, heatLevel, false);
   } catch (e) {}
 }
 
@@ -137,7 +180,8 @@ async function applyTrail(tabId) {
     // Apply favicon with trail
     await injectFavicon(tabId, settings.previousHue, heatLevel, settings.maxOpacity, true);
 
-    tabsWithTrail.add(tabId);
+    // Update title with trail marker
+    await updateTabTitle(tabId, heatLevel, true);
   } catch (e) {}
 }
 
@@ -260,11 +304,7 @@ async function refreshTabVisuals(tabId) {
     var favHue = isTrailTab ? settings.previousHue : settings.baseHue;
     await injectFavicon(tabId, favHue, heatLevel, settings.maxOpacity, isTrailTab);
 
-    if (isTrailTab) {
-      tabsWithTrail.add(tabId);
-    } else {
-      tabsWithTrail.delete(tabId);
-    }
+    await updateTabTitle(tabId, heatLevel, isTrailTab);
   } catch (e) {}
 }
 
@@ -278,7 +318,7 @@ api.tabs.onActivated.addListener(function(activeInfo) {
       activeTabId = activeInfo.tabId;
       activeWindowId = activeInfo.windowId;
 
-      // Clear trail from the old previous tab (not the current or new active)
+      // Clear trail from the old previous tab
       if (previousTabId && previousTabId !== activeTabId) {
         await clearTrail(previousTabId);
       }
@@ -341,9 +381,18 @@ api.windows.onFocusChanged.addListener(function(windowId) {
 api.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
   (async function() {
     try {
-      if (changeInfo.url || changeInfo.title) {
+      if (changeInfo.url) {
         ensureTabData(tab);
+        // Store new original title when URL changes
+        originalTitles[tabId] = tab.title || '';
         await saveTabData();
+      }
+      if (changeInfo.title) {
+        // Update stored original title if not marked
+        var currentTitle = tab.title || '';
+        if (!currentTitle.match(/^[\🟡\🟠\🔴\🔥\🔵\ ]+/)) {
+          originalTitles[tabId] = currentTitle;
+        }
       }
       if (changeInfo.status === 'complete') {
         await refreshTabVisuals(tabId);
@@ -357,7 +406,7 @@ api.tabs.onRemoved.addListener(function(tabId) {
   (async function() {
     try {
       delete tabData[tabId];
-      tabsWithTrail.delete(tabId);
+      delete originalTitles[tabId];
       if (tabId === activeTabId) activeTabId = null;
       if (tabId === previousTabId) previousTabId = null;
       await saveTabData();
@@ -412,7 +461,7 @@ api.runtime.onMessage.addListener(function(message, sender) {
       } else if (message.type === 'RESET_DATA') {
         tabData = {};
         previousTabId = null;
-        tabsWithTrail = new Set();
+        originalTitles = {};
         await saveTabData();
         await refreshAllVisuals();
         return { ok: true };
