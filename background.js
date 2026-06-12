@@ -1,4 +1,4 @@
-// Tab Heatmap - Background Script (Firefox v3)
+// Tab Heatmap - Background Script (Firefox v4)
 // Adds a visible heat bar at the top of each tab
 
 const api = typeof browser !== 'undefined' ? browser : chrome;
@@ -7,7 +7,7 @@ const DEFAULT_SETTINGS = {
   baseHue: 30,
   previousHue: 210,
   thresholds: [10, 30, 60, 180, 600],
-  maxOpacity: 0.85,
+  maxOpacity: 0.9,
   showTrail: true,
   enabled: true,
 };
@@ -19,6 +19,7 @@ let activeWindowId = null;
 let lastActivated = Date.now();
 let tabData = {};
 let previousTabId = null;
+let tabsWithTrail = new Set();
 
 async function init() {
   try {
@@ -86,35 +87,107 @@ async function saveTabData() {
   } catch (e) {}
 }
 
+// Clear trail from a specific tab
+async function clearTrail(tabId) {
+  if (!tabsWithTrail.has(tabId)) return;
+
+  try {
+    var settings = await getSettings();
+    var data = tabData[tabId];
+    if (!data) return;
+
+    var tab = await api.tabs.get(tabId);
+    if (!canInject(tab)) return;
+
+    var heatLevel = getHeatLevel(data.totalTime, settings.thresholds);
+
+    // Remove bar
+    var removeBarCode = '(function() {'
+      + 'var el = document.getElementById("tab-heatmap-bar");'
+      + 'if (el) el.remove();'
+      + '})();';
+
+    await api.tabs.executeScript(tabId, { code: removeBarCode }).catch(function() {});
+
+    // Reapply heat bar without trail
+    await injectHeatBar(tabId, heatLevel, false, settings.baseHue, settings.previousHue, settings.maxOpacity);
+
+    // Reapply favicon without trail
+    await injectFavicon(tabId, settings.baseHue, heatLevel, settings.maxOpacity, false);
+
+    tabsWithTrail.delete(tabId);
+  } catch (e) {}
+}
+
+// Apply trail to a specific tab
+async function applyTrail(tabId) {
+  try {
+    var settings = await getSettings();
+    var data = tabData[tabId];
+    if (!data) return;
+
+    var tab = await api.tabs.get(tabId);
+    if (!canInject(tab)) return;
+
+    var heatLevel = getHeatLevel(data.totalTime, settings.thresholds);
+
+    // Apply heat bar with trail
+    await injectHeatBar(tabId, heatLevel, true, settings.baseHue, settings.previousHue, settings.maxOpacity);
+
+    // Apply favicon with trail
+    await injectFavicon(tabId, settings.previousHue, heatLevel, settings.maxOpacity, true);
+
+    tabsWithTrail.add(tabId);
+  } catch (e) {}
+}
+
 async function injectHeatBar(tabId, heatLevel, isPrevious, baseHue, previousHue, maxOpacity) {
-  let heatOpacity, heatHeight, heatColor;
+  var heatOpacity, heatHeight, heatColor;
+
   if (heatLevel === 0) {
-    heatOpacity = 0.2;
-    heatHeight = 3;
+    heatOpacity = 0.25;
+    heatHeight = 4;
     heatColor = 'hsl(' + baseHue + ', 60%, 50%)';
-  } else {
-    heatOpacity = 0.4 + (heatLevel / 4) * (maxOpacity - 0.4);
-    heatHeight = 3 + (heatLevel / 4) * 5;
+  } else if (heatLevel === 1) {
+    heatOpacity = 0.4;
+    heatHeight = 6;
+    heatColor = 'hsl(' + baseHue + ', 70%, 50%)';
+  } else if (heatLevel === 2) {
+    heatOpacity = 0.6;
+    heatHeight = 8;
+    heatColor = 'hsl(' + baseHue + ', 75%, 52%)';
+  } else if (heatLevel === 3) {
+    heatOpacity = 0.8;
+    heatHeight = 10;
     heatColor = 'hsl(' + baseHue + ', 80%, 55%)';
+  } else {
+    heatOpacity = 1.0;
+    heatHeight = 12;
+    heatColor = 'hsl(' + baseHue + ', 85%, 55%)';
   }
 
-  var barColor = isPrevious ? 'hsl(' + previousHue + ', 90%, 60%)' : heatColor;
-  var barHeight = isPrevious ? 8 : heatHeight;
+  var barColor = isPrevious ? 'hsl(' + previousHue + ', 95%, 55%)' : heatColor;
+  var barHeight = isPrevious ? 10 : heatHeight;
   var barOpacity = isPrevious ? 1.0 : heatOpacity;
   var fillPercent = Math.min(100, (heatLevel / 4) * 100);
   var fillWidth = isPrevious ? '100%' : fillPercent + '%';
-  var shadowSize = isPrevious ? '8px' : '4px';
+  var shadowSize = isPrevious ? '10px' : '6px';
+  var glowColor = isPrevious ? 'hsl(' + previousHue + ', 100%, 70%)' : 'hsl(' + baseHue + ', 90%, 65%)';
 
   var code = '(function() {'
     + 'var existing = document.getElementById("tab-heatmap-bar");'
     + 'if (existing) existing.remove();'
     + 'var bar = document.createElement("div");'
     + 'bar.id = "tab-heatmap-bar";'
-    + 'bar.style.cssText = "position:fixed;top:0;left:0;width:100%;height:' + barHeight + 'px;z-index:2147483647;pointer-events:none;background:transparent;";'
+    + 'bar.setAttribute("style", "position:fixed !important;top:0 !important;left:0 !important;width:100% !important;height:' + barHeight + 'px !important;z-index:2147483647 !important;pointer-events:none !important;background:transparent !important;border:none !important;margin:0 !important;padding:0 !important;");'
     + 'var fill = document.createElement("div");'
-    + 'fill.style.cssText = "position:absolute;top:0;left:0;height:100%;width:' + fillWidth + ';background:' + barColor + ';opacity:' + barOpacity + ';transition:width 0.5s ease,background 0.3s ease;box-shadow:0 0 ' + shadowSize + ' ' + barColor + ';";'
+    + 'fill.setAttribute("style", "position:absolute !important;top:0 !important;left:0 !important;height:100% !important;width:' + fillWidth + ' !important;background:' + barColor + ' !important;opacity:' + barOpacity + ' !important;box-shadow:0 0 ' + shadowSize + ' ' + glowColor + ', 0 0 ' + (parseInt(shadowSize) + 4) + 'px ' + barColor + ' !important;border:none !important;margin:0 !important;padding:0 !important;");'
     + 'bar.appendChild(fill);'
-    + 'document.body.appendChild(bar);'
+    + 'if (document.body) {'
+    + '  document.body.appendChild(bar);'
+    + '} else {'
+    + '  document.addEventListener("DOMContentLoaded", function() { document.body.appendChild(bar); });'
+    + '}'
     + '})();';
 
   try {
@@ -127,14 +200,15 @@ async function injectFavicon(tabId, hue, heatLevel, maxOpacity, isPrevious) {
   var r = 12;
   var opacity;
   if (heatLevel === 0) {
-    opacity = 0.3;
+    opacity = 0.4;
   } else {
-    opacity = 0.4 + (heatLevel / 4) * (maxOpacity - 0.4);
+    opacity = 0.5 + (heatLevel / 4) * (maxOpacity - 0.5);
   }
 
   var circle = '<circle cx="16" cy="16" r="' + r + '" fill="hsl(' + hue + ', 80%, 55%)" opacity="' + opacity + '"/>';
   if (isPrevious) {
-    circle += '<circle cx="16" cy="16" r="' + (r - 2) + '" fill="none" stroke="hsl(' + hue + ', 90%, 70%)" stroke-width="2" opacity="1"/>';
+    circle += '<circle cx="16" cy="16" r="' + (r - 2) + '" fill="none" stroke="hsl(' + hue + ', 95%, 70%)" stroke-width="2.5" opacity="1"/>';
+    circle += '<circle cx="16" cy="16" r="' + (r - 5) + '" fill="none" stroke="hsl(' + hue + ', 100%, 80%)" stroke-width="1" opacity="0.8"/>';
   }
 
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' + circle + '</svg>';
@@ -156,7 +230,18 @@ async function injectFavicon(tabId, hue, heatLevel, maxOpacity, isPrevious) {
   } catch (e) {}
 }
 
-async function applyTabVisuals(tabId) {
+async function refreshAllVisuals() {
+  try {
+    var tabs = await api.tabs.query({});
+    for (var i = 0; i < tabs.length; i++) {
+      if (canInject(tabs[i])) {
+        await refreshTabVisuals(tabs[i].id);
+      }
+    }
+  } catch (e) {}
+}
+
+async function refreshTabVisuals(tabId) {
   try {
     var settings = await getSettings();
     if (!settings.enabled) return;
@@ -168,22 +253,17 @@ async function applyTabVisuals(tabId) {
     if (!canInject(tab)) return;
 
     var heatLevel = getHeatLevel(data.totalTime, settings.thresholds);
-    var isPrevious = settings.showTrail && tabId === previousTabId;
+    var isTrailTab = settings.showTrail && tabId === previousTabId;
 
-    await injectHeatBar(tabId, heatLevel, isPrevious, settings.baseHue, settings.previousHue, settings.maxOpacity);
+    await injectHeatBar(tabId, heatLevel, isTrailTab, settings.baseHue, settings.previousHue, settings.maxOpacity);
 
-    var favHue = isPrevious ? settings.previousHue : settings.baseHue;
-    await injectFavicon(tabId, favHue, heatLevel, settings.maxOpacity, isPrevious);
-  } catch (e) {}
-}
+    var favHue = isTrailTab ? settings.previousHue : settings.baseHue;
+    await injectFavicon(tabId, favHue, heatLevel, settings.maxOpacity, isTrailTab);
 
-async function refreshAllVisuals() {
-  try {
-    var tabs = await api.tabs.query({});
-    for (var i = 0; i < tabs.length; i++) {
-      if (canInject(tabs[i])) {
-        await applyTabVisuals(tabs[i].id);
-      }
+    if (isTrailTab) {
+      tabsWithTrail.add(tabId);
+    } else {
+      tabsWithTrail.delete(tabId);
     }
   } catch (e) {}
 }
@@ -198,18 +278,21 @@ api.tabs.onActivated.addListener(function(activeInfo) {
       activeTabId = activeInfo.tabId;
       activeWindowId = activeInfo.windowId;
 
-      if (previousTabId && previousTabId !== activeTabId && previousTabId !== oldTabId) {
-        await applyTabVisuals(previousTabId);
+      // Clear trail from the old previous tab (not the current or new active)
+      if (previousTabId && previousTabId !== activeTabId) {
+        await clearTrail(previousTabId);
       }
 
+      // Set new previous tab and apply trail
       if (oldTabId && oldTabId !== activeTabId) {
         previousTabId = oldTabId;
-        await applyTabVisuals(oldTabId);
+        await applyTrail(oldTabId);
       }
 
+      // Update new active tab visuals
       var tab = await api.tabs.get(activeInfo.tabId);
       ensureTabData(tab);
-      await applyTabVisuals(activeInfo.tabId);
+      await refreshTabVisuals(activeInfo.tabId);
       await saveTabData();
     } catch (e) {}
   })();
@@ -234,13 +317,19 @@ api.windows.onFocusChanged.addListener(function(windowId) {
         var oldTabId = activeTabId;
         activeTabId = activeTabs[0].id;
 
+        // Clear trail from old previous tab
+        if (previousTabId && previousTabId !== activeTabId) {
+          await clearTrail(previousTabId);
+        }
+
+        // Set new previous tab and apply trail
         if (oldTabId && oldTabId !== activeTabId) {
           previousTabId = oldTabId;
-          await applyTabVisuals(oldTabId);
+          await applyTrail(oldTabId);
         }
 
         ensureTabData(activeTabs[0]);
-        await applyTabVisuals(activeTabs[0].id);
+        await refreshTabVisuals(activeTabs[0].id);
       }
 
       await saveTabData();
@@ -257,7 +346,7 @@ api.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
         await saveTabData();
       }
       if (changeInfo.status === 'complete') {
-        await applyTabVisuals(tabId);
+        await refreshTabVisuals(tabId);
       }
     } catch (e) {}
   })();
@@ -268,6 +357,7 @@ api.tabs.onRemoved.addListener(function(tabId) {
   (async function() {
     try {
       delete tabData[tabId];
+      tabsWithTrail.delete(tabId);
       if (tabId === activeTabId) activeTabId = null;
       if (tabId === previousTabId) previousTabId = null;
       await saveTabData();
@@ -275,16 +365,16 @@ api.tabs.onRemoved.addListener(function(tabId) {
   })();
 });
 
-// Periodic refresh every 5 seconds
+// Periodic refresh every 3 seconds
 setInterval(function() {
   (async function() {
     await trackTime();
     await saveTabData();
     if (activeTabId) {
-      await applyTabVisuals(activeTabId);
+      await refreshTabVisuals(activeTabId);
     }
   })();
-}, 5000);
+}, 3000);
 
 // Message handler
 api.runtime.onMessage.addListener(function(message, sender) {
@@ -322,6 +412,7 @@ api.runtime.onMessage.addListener(function(message, sender) {
       } else if (message.type === 'RESET_DATA') {
         tabData = {};
         previousTabId = null;
+        tabsWithTrail = new Set();
         await saveTabData();
         await refreshAllVisuals();
         return { ok: true };
