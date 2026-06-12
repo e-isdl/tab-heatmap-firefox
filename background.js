@@ -1,18 +1,18 @@
-// Tab Heatmap - Background Script (Firefox)
-// Tracks tab focus time and applies heat-based coloring
+// Tab Heatmap - Background Script (Firefox v2)
+// Adds a visible heat bar at the top of each tab
 
 const api = typeof browser !== 'undefined' ? browser : chrome;
 
 const DEFAULT_SETTINGS = {
   baseHue: 30,
-  previousHue: 200,
+  previousHue: 210,
   thresholds: [10, 30, 60, 180, 600],
   maxOpacity: 0.85,
   showTrail: true,
   enabled: true,
 };
 
-const RESTRICTED_URLS = /^(about:|moz-extension:\/\/|file:\/\/)/;
+const RESTRICTED = /^(about:|moz-extension:\/\/|file:\/\/|data:)/;
 
 let activeTabId = null;
 let activeWindowId = null;
@@ -22,15 +22,13 @@ let previousTabId = null;
 
 async function init() {
   try {
-    const stored = await api.storage.local.get(['tabData', 'settings']);
+    const stored = await api.storage.local.get(['tabData']);
     tabData = stored.tabData || {};
 
     const tabs = await api.tabs.query({});
     const activeIds = new Set(tabs.map(t => t.id));
     for (const id of Object.keys(tabData)) {
-      if (!activeIds.has(parseInt(id))) {
-        delete tabData[id];
-      }
+      if (!activeIds.has(parseInt(id))) delete tabData[id];
     }
 
     const activeTabs = await api.tabs.query({ active: true, lastFocusedWindow: true });
@@ -43,20 +41,13 @@ async function init() {
     }
 
     await saveTabData();
-  } catch (e) {
-    // Init might fail during startup
-  }
+  } catch (e) {}
 }
 
 function ensureTabData(tab) {
   if (!tab || !tab.id) return;
   if (!tabData[tab.id]) {
-    tabData[tab.id] = {
-      totalTime: 0,
-      lastFocused: Date.now(),
-      url: tab.url || '',
-      title: tab.title || '',
-    };
+    tabData[tab.id] = { totalTime: 0, lastFocused: Date.now(), url: '', title: '' };
   }
   if (tab.url) tabData[tab.id].url = tab.url;
   if (tab.title) tabData[tab.id].title = tab.title;
@@ -74,204 +65,244 @@ async function trackTime() {
 function getHeatLevel(totalTime, thresholds) {
   let level = 0;
   for (let i = 0; i < thresholds.length; i++) {
-    if (totalTime >= thresholds[i]) {
-      level = i + 1;
-    }
+    if (totalTime >= thresholds[i]) level = i + 1;
   }
   return Math.min(level, 4);
 }
 
-function generateHeatSvg(baseHue, heatLevel, maxOpacity, isPrevious) {
-  let opacity;
+function canInject(tab) {
+  if (!tab || !tab.url) return false;
+  return !RESTRICTED.test(tab.url);
+}
+
+function buildInjectionScript(heatLevel, isPrevious, baseHue, previousHue, maxOpacity) {
+  let heatOpacity, heatHeight, heatColor;
   if (heatLevel === 0) {
-    opacity = 0.15;
+    heatOpacity = 0.2;
+    heatHeight = 3;
+    heatColor = 'hsl(' + baseHue + ', 60%, 50%)';
   } else {
-    opacity = 0.2 + (heatLevel / 4) * (maxOpacity - 0.2);
+    heatOpacity = 0.4 + (heatLevel / 4) * (maxOpacity - 0.4);
+    heatHeight = 3 + (heatLevel / 4) * 5;
+    heatColor = 'hsl(' + baseHue + ', 80%, 55%)';
   }
 
-  const hue = isPrevious ? DEFAULT_SETTINGS.previousHue : baseHue;
+  var barColor = isPrevious ? 'hsl(' + previousHue + ', 90%, 60%)' : heatColor;
+  var barHeight = isPrevious ? 8 : heatHeight;
+  var barOpacity = isPrevious ? 1.0 : heatOpacity;
+  var fillPercent = Math.min(100, (heatLevel / 4) * 100);
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-    <circle cx="16" cy="16" r="12" fill="hsl(${hue}, 80%, 55%)" opacity="${opacity}"/>
-    ${isPrevious ? `<circle cx="16" cy="16" r="9" fill="none" stroke="hsl(${hue}, 90%, 70%)" stroke-width="1.5" opacity="0.9"/>` : ''}
-  </svg>`;
-
-  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  return '(function() {' +
+    'var existing = document.getElementById("tab-heatmap-bar");' +
+    'if (existing) existing.remove();' +
+    'var bar = document.createElement("div");' +
+    'bar.id = "tab-heatmap-bar";' +
+    'bar.style.cssText = "position:fixed;top:0;left:0;width:100%;height:' + barHeight + 'px;z-index:2147483647;pointer-events:none;background:transparent;";' +
+    'var fill = document.createElement("div");' +
+    'fill.style.cssText = "position:absolute;top:0;left:0;height:100%;width:' + (isPrevious ? '100' : fillPercent) + '%;background:' + barColor + ';opacity:' + barOpacity + ';transition:width 0.5s ease,background 0.3s ease;box-shadow:0 0 ' + (isPrevious ? '8' : '4') + 'px ' + barColor + '";' +
+    'bar.appendChild(fill);' +
+    'document.body.appendChild(bar);' +
+  '})();';
 }
 
-function canInjectScript(tab) {
-  if (!tab || !tab.url) return false;
-  if (RESTRICTED_URLS.test(tab.url)) return false;
-  if (tab.url.startsWith('data:')) return false;
-  return true;
+function buildFaviconScript(hue, heatLevel, maxOpacity, isPrevious) {
+  var size = 32, r = 12, cx = 16, cy = 16;
+  var opacity;
+  if (heatLevel === 0) { opacity = 0.3; }
+  else { opacity = 0.4 + (heatLevel / 4) * (maxOpacity - 0.4); }
+
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' +
+    '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="hsl(' + hue + ', 80%, 55%)" opacity="' + opacity + '"/>' +
+    (isPrevious ? '<circle cx="' + cx + '" cy="' + cy + '" r="' + (r - 2) + '" fill="none" stroke="hsl(' + hue + ', 90%, 70%)" stroke-width="2" opacity="1"/>' : '') +
+    '</svg>';
+
+  var faviconUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+
+  return '(function() {' +
+    'var existing = document.getElementById("tab-heatmap-favicon");' +
+    'if (existing) existing.remove();' +
+    'var link = document.createElement("link");' +
+    'link.id = "tab-heatmap-favicon";' +
+    'link.rel = "icon";' +
+    'link.type = "image/svg+xml";' +
+    'link.href = "' + faviconUrl + '";' +
+    'document.head.appendChild(link);' +
+  '})();';
 }
 
-async function applyTabColor(tabId) {
+async function applyTabVisuals(tabId) {
   try {
-    const stored = await api.storage.local.get('settings');
-    const settings = stored.settings || DEFAULT_SETTINGS;
+    var stored = await api.storage.local.get('settings');
+    var settings = stored.settings || DEFAULT_SETTINGS;
     if (!settings.enabled) return;
 
-    const data = tabData[tabId];
+    var data = tabData[tabId];
     if (!data) return;
 
-    const tab = await api.tabs.get(tabId);
-    if (!canInjectScript(tab)) return;
+    var tab = await api.tabs.get(tabId);
+    if (!canInject(tab)) return;
 
-    const heatLevel = getHeatLevel(data.totalTime, settings.thresholds);
-    const isPrevious = settings.showTrail && tabId === previousTabId;
-    const faviconUrl = generateHeatSvg(
-      settings.baseHue,
-      heatLevel,
-      settings.maxOpacity,
-      isPrevious
+    var heatLevel = getHeatLevel(data.totalTime, settings.thresholds);
+    var isPrevious = settings.showTrail && tabId === previousTabId;
+
+    // Inject top bar
+    var barScript = buildInjectionScript(
+      heatLevel, isPrevious,
+      settings.baseHue, settings.previousHue, settings.maxOpacity
     );
 
-    await api.tabs.executeScript(tabId, {
-      code: `
-        (function() {
-          var existing = document.getElementById('tab-heatmap-favicon');
-          if (existing) existing.remove();
-          var links = document.querySelectorAll('link[rel="icon"], link[rel="shortcut icon"]');
-          links.forEach(function(l) { l.remove(); });
-          var link = document.createElement('link');
-          link.id = 'tab-heatmap-favicon';
-          link.rel = 'icon';
-          link.type = 'image/svg+xml';
-          link.href = '${faviconUrl}';
-          document.head.appendChild(link);
-        })();
-      `,
-    });
-  } catch (e) {
-    // Silently ignore - tab may have navigated, closed, or be restricted
-  }
+    try {
+      await api.tabs.executeScript(tabId, { code: barScript });
+    } catch (e) {}
+
+    // Inject favicon
+    var favHue = isPrevious ? settings.previousHue : settings.baseHue;
+    var favScript = buildFaviconScript(favHue, heatLevel, settings.maxOpacity, isPrevious);
+
+    try {
+      await api.tabs.executeScript(tabId, { code: favScript });
+    } catch (e) {}
+  } catch (e) {}
 }
 
-async function refreshAllTabColors() {
+async function refreshAllVisuals() {
   try {
-    const stored = await api.storage.local.get('settings');
-    const settings = stored.settings || DEFAULT_SETTINGS;
-    if (!settings.enabled) return;
-
-    const tabs = await api.tabs.query({});
-    for (const tab of tabs) {
-      if (canInjectScript(tab)) {
-        await applyTabColor(tab.id);
+    var tabs = await api.tabs.query({});
+    for (var i = 0; i < tabs.length; i++) {
+      if (canInject(tabs[i])) {
+        await applyTabVisuals(tabs[i].id);
       }
     }
-  } catch (e) {
-    // Refresh might fail
-  }
+  } catch (e) {}
+}
+
+async function getSettings() {
+  var stored = await api.storage.local.get('settings');
+  return stored.settings || DEFAULT_SETTINGS;
 }
 
 async function saveTabData() {
   try {
-    await api.storage.local.set({ tabData });
-  } catch (e) {
-    // Storage might fail
-  }
+    await api.storage.local.set({ tabData: tabData });
+  } catch (e) {}
 }
 
 // Tab activated
-api.tabs.onActivated.addListener(async (activeInfo) => {
-  try {
-    await trackTime();
+api.tabs.onActivated.addListener(function(activeInfo) {
+  (async function() {
+    try {
+      await trackTime();
 
-    const prevTabId = activeTabId;
-    activeTabId = activeInfo.tabId;
-    activeWindowId = activeInfo.windowId;
+      var oldTabId = activeTabId;
+      activeTabId = activeInfo.tabId;
+      activeWindowId = activeInfo.windowId;
 
-    if (prevTabId && prevTabId !== activeTabId) {
-      previousTabId = prevTabId;
-      await applyTabColor(prevTabId);
-    }
+      // Clear trail from old previous tab
+      if (previousTabId && previousTabId !== activeTabId && previousTabId !== oldTabId) {
+        await applyTabVisuals(previousTabId);
+      }
 
-    const tab = await api.tabs.get(activeInfo.tabId);
-    ensureTabData(tab);
-    await applyTabColor(activeInfo.tabId);
-    await saveTabData();
-  } catch (e) {
-    // Tab might not exist
-  }
+      // Set new previous tab
+      if (oldTabId && oldTabId !== activeTabId) {
+        previousTabId = oldTabId;
+        await applyTabVisuals(oldTabId);
+      }
+
+      // Update new active tab
+      var tab = await api.tabs.get(activeInfo.tabId);
+      ensureTabData(tab);
+      await applyTabVisuals(activeInfo.tabId);
+      await saveTabData();
+    } catch (e) {}
+  })();
 });
 
 // Window focus changed
-api.windows.onFocusChanged.addListener(async (windowId) => {
-  try {
-    await trackTime();
+api.windows.onFocusChanged.addListener(function(windowId) {
+  (async function() {
+    try {
+      await trackTime();
 
-    if (windowId === api.windows.WINDOW_ID_NONE) {
-      activeTabId = null;
-      activeWindowId = null;
-      return;
-    }
+      if (windowId === api.windows.WINDOW_ID_NONE) {
+        activeTabId = null;
+        activeWindowId = null;
+        return;
+      }
 
-    activeWindowId = windowId;
+      activeWindowId = windowId;
 
-    const activeTabs = await api.tabs.query({ active: true, windowId });
-    if (activeTabs.length > 0) {
-      activeTabId = activeTabs[0].id;
-      ensureTabData(activeTabs[0]);
-      await applyTabColor(activeTabs[0].id);
-    }
+      var activeTabs = await api.tabs.query({ active: true, windowId: windowId });
+      if (activeTabs.length > 0) {
+        var oldTabId = activeTabId;
+        activeTabId = activeTabs[0].id;
 
-    await saveTabData();
-  } catch (e) {
-    // Window might not exist
-  }
+        if (oldTabId && oldTabId !== activeTabId) {
+          previousTabId = oldTabId;
+          await applyTabVisuals(oldTabId);
+        }
+
+        ensureTabData(activeTabs[0]);
+        await applyTabVisuals(activeTabs[0].id);
+      }
+
+      await saveTabData();
+    } catch (e) {}
+  })();
 });
 
 // Tab updated
-api.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  try {
-    if (changeInfo.url || changeInfo.title) {
-      ensureTabData(tab);
-      await saveTabData();
-    }
-
-    if (changeInfo.status === 'complete') {
-      await applyTabColor(tabId);
-    }
-  } catch (e) {
-    // Tab update failed
-  }
+api.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
+  (async function() {
+    try {
+      if (changeInfo.url || changeInfo.title) {
+        ensureTabData(tab);
+        await saveTabData();
+      }
+      if (changeInfo.status === 'complete') {
+        await applyTabVisuals(tabId);
+      }
+    } catch (e) {}
+  })();
 });
 
 // Tab removed
-api.tabs.onRemoved.addListener(async (tabId) => {
-  try {
-    delete tabData[tabId];
-    if (tabId === activeTabId) activeTabId = null;
-    if (tabId === previousTabId) previousTabId = null;
-    await saveTabData();
-  } catch (e) {
-    // Cleanup failed
-  }
+api.tabs.onRemoved.addListener(function(tabId) {
+  (async function() {
+    try {
+      delete tabData[tabId];
+      if (tabId === activeTabId) activeTabId = null;
+      if (tabId === previousTabId) previousTabId = null;
+      await saveTabData();
+    } catch (e) {}
+  })();
 });
 
-// Periodic save (every 10 seconds)
-setInterval(async () => {
-  await trackTime();
-  await saveTabData();
-}, 10000);
+// Periodic refresh (every 5 seconds)
+setInterval(function() {
+  (async function() {
+    await trackTime();
+    await saveTabData();
+    if (activeTabId) {
+      await applyTabVisuals(activeTabId);
+    }
+  })();
+}, 5000);
 
 // Message handler
-api.runtime.onMessage.addListener((message, sender) => {
-  return (async () => {
+api.runtime.onMessage.addListener(function(message, sender) {
+  return (async function() {
     try {
       if (message.type === 'GET_STATS') {
-        const tabs = await api.tabs.query({});
-        let totalTime = 0;
-        let hotTabs = 0;
-        const stored = await api.storage.local.get('settings');
-        const settings = stored.settings || DEFAULT_SETTINGS;
+        var tabs = await api.tabs.query({});
+        var totalTime = 0;
+        var hotTabs = 0;
+        var settings = await getSettings();
 
-        for (const tab of tabs) {
-          const data = tabData[tab.id];
+        for (var i = 0; i < tabs.length; i++) {
+          var data = tabData[tabs[i].id];
           if (data) {
             totalTime += data.totalTime;
-            const level = getHeatLevel(data.totalTime, settings.thresholds);
+            var level = getHeatLevel(data.totalTime, settings.thresholds);
             if (level >= 3) hotTabs++;
           }
         }
@@ -279,22 +310,22 @@ api.runtime.onMessage.addListener((message, sender) => {
         return {
           totalTabs: tabs.length,
           totalTime: Math.round(totalTime),
-          hotTabs,
-          activeTabId,
-          previousTabId,
+          hotTabs: hotTabs,
+          activeTabId: activeTabId,
+          previousTabId: previousTabId,
         };
       } else if (message.type === 'UPDATE_SETTINGS') {
         await api.storage.local.set({ settings: message.settings });
-        await refreshAllTabColors();
+        await refreshAllVisuals();
         return { ok: true };
       } else if (message.type === 'GET_SETTINGS') {
-        const stored = await api.storage.local.get('settings');
+        var stored = await api.storage.local.get('settings');
         return { settings: stored.settings || DEFAULT_SETTINGS };
       } else if (message.type === 'RESET_DATA') {
         tabData = {};
         previousTabId = null;
         await saveTabData();
-        await refreshAllTabColors();
+        await refreshAllVisuals();
         return { ok: true };
       }
     } catch (e) {
@@ -303,8 +334,7 @@ api.runtime.onMessage.addListener((message, sender) => {
   })();
 });
 
-// Init on install and startup
-api.runtime.onInstalled.addListener(() => init());
-api.runtime.onStartup.addListener(() => init());
+api.runtime.onInstalled.addListener(function() { init(); });
+api.runtime.onStartup.addListener(function() { init(); });
 
 init();
